@@ -1,0 +1,74 @@
+# Backend tool config for DynaChat
+#
+# This file configures ruff (lint + format) and mypy (types) for
+# `app/backend/`. It is read by the Dark Factory `dark-factory-validate`
+# command (and by a human running `ruff check backend` from `app/`).
+#
+# Runtime Python deps live in `requirements.txt`. Dev deps needed to run
+# these tools live in `requirements-dev.txt`.
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Scope: the whole backend package. Everything else is out of scope.
+src = ["."]
+extend-exclude = [
+    ".venv",
+    "venv",
+    "data",
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+# Conservative starting set. Tighten later once the factory has baseline CI.
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+]
+ignore = [
+    "E501",  # line-too-long — format handles this
+    "B008",  # FastAPI uses Depends() in defaults intentionally
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests can use unused args for fixtures and assert pytest-style.
+"tests/**/*.py" = ["B011", "B017"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.11"
+# Start lenient per CLAUDE.md ("strict = false initially") and ratchet later.
+strict = false
+warn_return_any = true
+warn_unused_configs = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+# Scope: the backend package.
+files = ["."]
+exclude = [
+    "^\\.venv/",
+    "^venv/",
+    "^data/",
+    "^__pycache__/",
+]
+
+[[tool.mypy.overrides]]
+# Third-party libraries without type stubs.
+module = ["docling_core.*", "docling.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# -x stops on first failure (fail fast in the factory validate step).
+# -v gives enough signal to debug without being too noisy.
+addopts = "-v --tb=short"

@@ -1,0 +1,128 @@
+name: dark-factory-triage
+description: |
+  Use when: Orchestrator needs to batch-classify untriaged GitHub issues for the Dark Factory experiment.
+  Triggers: Orchestrator invokes when open issues exist without any factory:* label.
+  Does: Reads MISSION.md + FACTORY_RULES.md, classifies up to 10 issues against the rules,
+        and either accepts them into the factory queue or rejects+closes them with a reason.
+  NOT for: Implementing issues, reviewing PRs, or human-in-the-loop triage. Triage has two
+           verdicts only -- accept or reject. Ambiguous issues are rejected with an
+           explanation; the human can reopen with more context if they disagree.
+
+provider: claude
+model: sonnet
+
+nodes:
+  # --- Layer 0: parallel context gathering (no AI) ---
+
+  - id: fetch-issues
+    bash: |
+      set -euo pipefail
+      # Fetch open issues that have NO factory:* label yet.
+      # Cap at 10 issues per batch, truncate each body to ~2KB so we don't blow context.
+      gh issue list \
+        --state open \
+        --limit 30 \
+        --json number,title,body,author,createdAt,labels \
+        --search "-label:factory:triaging -label:factory:accepted -label:factory:rejected -label:factory:needs-human -label:factory:in-progress" \
+        | jq '[.[] | select(([.labels[].name] | any(startswith("factory:"))) | not)] | .[0:10] | map(.body = (.body // "" | .[0:2000]))'
+    timeout: 20000
+
+  - id: fetch-rules
+    bash: |
+      set -euo pipefail
+      echo "=== MISSION.md ==="
+      cat MISSION.md
+      echo ""
+      echo "=== FACTORY_RULES.md ==="
+      cat FACTORY_RULES.md
+    timeout: 10000
+
+  - id: fetch-open-prs
+    bash: |
+      set -euo pipefail
+      # Used by the classifier to detect issues already addressed by in-flight PRs.
+      gh pr list --state open --limit 20 --json number,title,body,headRefName \
+        | jq 'map(.body = (.body // "" | .[0:800]))'
+    timeout: 15000
+
+  # --- Layer 1: single AI classification call ---
+
+  - id: classify
+    command: dark-factory-triage-classify
+    depends_on: [fetch-issues, fetch-rules, fetch-open-prs]
+    model: sonnet
+    allowed_tools: [Write]
+
+  # --- Layer 2: apply decisions deterministically ---
+
+  - id: apply-decisions
+    depends_on: [classify]
+    bash: |
+      set -euo pipefail
+
+      DECISIONS_FILE="$ARTIFACTS_DIR/decisions.json"
+
+      if [ ! -f "$DECISIONS_FILE" ]; then
+        echo "ERROR: decisions.json not found at $DECISIONS_FILE" >&2
+        exit 1
+      fi
+
+      # Validate JSON structure before touching GitHub.
+      if ! jq -e '.decisions | type == "array"' "$DECISIONS_FILE" > /dev/null; then
+        echo "ERROR: decisions.json does not contain a 'decisions' array" >&2
+        cat "$DECISIONS_FILE" >&2
+        exit 1
+      fi
+
+      COUNT=$(jq '.decisions | length' "$DECISIONS_FILE")
+      echo "Applying $COUNT triage decisions..."
+
+      # Iterate by index and pull each field with jq -r. This avoids base64
+      # streaming (which breaks on Git Bash for Windows due to CRLF handling)
+      # and avoids any shell-quoting issues with multi-line reason strings:
+      # jq -r emits raw strings directly into the command substitution, so
+      # newlines, quotes, and emoji are preserved untouched.
+      i=0
+      while [ "$i" -lt "$COUNT" ]; do
+        num=$(jq -r ".decisions[$i].issue_number" "$DECISIONS_FILE")
+        verdict=$(jq -r ".decisions[$i].verdict" "$DECISIONS_FILE")
+        priority=$(jq -r ".decisions[$i].priority // \"medium\"" "$DECISIONS_FILE")
+        classification=$(jq -r ".decisions[$i].classification // \"enhancement\"" "$DECISIONS_FILE")
+        reason=$(jq -r ".decisions[$i].reason" "$DECISIONS_FILE")
+        dup_of=$(jq -r ".decisions[$i].duplicate_of // empty" "$DECISIONS_FILE")
+
+        echo ""
+        echo "--- Issue #$num: $verdict ($priority, $classification) ---"
+
+        case "$verdict" in
+          accept)
+            body="**Dark Factory triage:** accepted"$'\n\n'"${reason}"$'\n\n'"_Priority: ${priority} | Type: ${classification}_"
+            gh issue edit "$num" \
+              --add-label "factory:accepted" \
+              --add-label "priority:$priority" \
+              --add-label "type:$classification"
+            gh issue comment "$num" --body "$body"
+            ;;
+
+          reject)
+            if [ -n "$dup_of" ]; then
+              body="**Dark Factory triage:** rejected as duplicate of #$dup_of"$'\n\n'"$reason"
+            else
+              body="**Dark Factory triage:** rejected"$'\n\n'"$reason"$'\n\n'"_If you disagree, please reopen this issue with additional context and it will be re-triaged._"
+            fi
+            gh issue comment "$num" --body "$body"
+            gh issue edit "$num" --add-label "factory:rejected"
+            gh issue close "$num" --reason "not planned"
+            ;;
+
+          *)
+            echo "WARNING: unknown verdict '$verdict' for issue #$num -- skipping" >&2
+            ;;
+        esac
+
+        i=$((i + 1))
+      done
+
+      echo ""
+      echo "Triage complete: $COUNT decisions applied."
+    timeout: 180000
