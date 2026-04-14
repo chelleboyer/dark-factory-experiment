@@ -33,3 +33,6 @@ Thumbs.db
 
 # Test screenshots
 app/screenshots/test-*
+
+# Archon per-codebase secrets
+.archon/config.yaml
