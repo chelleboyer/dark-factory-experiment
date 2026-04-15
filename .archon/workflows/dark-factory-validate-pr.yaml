@@ -290,7 +290,7 @@ nodes:
       # Wait for both to be healthy
       echo "Waiting for backend on :$BACKEND_PORT ..."
       for i in $(seq 1 60); do
-        if curl -sf "http://127.0.0.1:$BACKEND_PORT/health" > /dev/null 2>&1; then
+        if curl -sf "http://127.0.0.1:$BACKEND_PORT/api/health" > /dev/null 2>&1; then
           echo "backend up after ${i}s"; break
         fi
         if [ $i -eq 60 ]; then
