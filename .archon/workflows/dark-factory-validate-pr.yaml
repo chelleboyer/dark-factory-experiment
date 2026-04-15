@@ -151,6 +151,13 @@ nodes:
     bash: |
       set -euo pipefail
       PR_NUMBER=$(cat "$ARTIFACTS_DIR/.pr-number")
+      # Defensive: drop any stray untracked files in infra directories before
+      # switching branches. If the VPS-side main has untracked files in
+      # .archon/ or .claude/ (e.g., experimental workflows that haven't been
+      # committed), Archon's worktree creation can carry them in and gh pr
+      # checkout will refuse to overwrite them when the PR adds the same
+      # paths as tracked files. Cleaning here makes checkout deterministic.
+      git clean -fd .archon/ .claude/ 2>/dev/null || true
       gh pr checkout "$PR_NUMBER"
       echo "Checked out PR #$PR_NUMBER on branch $(git branch --show-current)"
       # Pull infra-only files from origin/main into the worktree so the
@@ -724,6 +731,12 @@ nodes:
 
   - id: synthesize-verdict-pass-2
     command: dark-factory-synthesize-verdict-p2
+    # Only run when pass-1 actually triggered a fix loop. If pass-1 verdict was
+    # approve or reject, the pass-2 reviewer nodes are correctly skipped — and
+    # this synthesizer would otherwise see all-empty inputs and panic-render an
+    # escalation. The when condition here mirrors fix-issues so the two stay
+    # in sync.
+    when: "$synthesize-verdict-pass-1.output.verdict == 'request_changes'"
     depends_on:
       - static-checks-backend-p2
       - static-checks-frontend-p2
