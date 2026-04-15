@@ -5,11 +5,14 @@ Handles lifespan startup (DB init + seeding) and route registration.
 
 import logging
 from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as get_version
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+from backend.config import DB_PATH
 from backend.data.seed import seed_if_empty
 from backend.db.schema import init_db
 
@@ -61,7 +64,6 @@ from backend.db import repository  # noqa: E402
 async def health():
     video_count = await repository.count_videos()
     chunk_count = await repository.count_chunks()
-    from backend.config import DB_PATH
 
     return {
         "status": "ok",
@@ -71,16 +73,18 @@ async def health():
     }
 
 
-# ---------------------------------------------------------------------------
-# Sprint 2 SSE test route — verifies streaming format without full RAG
-# ---------------------------------------------------------------------------
+@app.get("/api/version")
+async def version() -> dict[str, str]:
+    try:
+        return {"version": get_version("dynachat-backend")}
+    except PackageNotFoundError:
+        raise HTTPException(status_code=503, detail="Package metadata unavailable") from None
 
 
 @app.post("/api/stream-test")
 async def stream_test():
     """
-    Test route that streams a short LLM response as SSE.
-    Used to verify Content-Type: text/event-stream and SSE formatting.
+    Test route that streams a short LLM response as SSE to verify streaming format.
     """
     from backend.llm.openrouter import stream_chat
 
