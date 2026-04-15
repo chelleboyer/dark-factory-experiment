@@ -812,21 +812,26 @@ nodes:
         | map("- **\(.severity)** [\(.category)]\(if .file then " (`\(.file)`)" else "" end): \(.description)")
         | join("\n")')
 
+      # Multi-line PR/issue bodies are built via printf so every source line stays
+      # inside the YAML block scalar's indent column (column-0 lines would terminate
+      # the block early and cause a YAML parse error).
+
       case "$DECISION" in
         approve)
-          BODY="**Dark Factory Validation**: APPROVED (${PASS_LABEL})
-
-${SUMMARY}
-
-All quality gates passed:
-- Behavioral (static): solves_issue=yes
-- Behavioral (E2E via agent-browser): solves_issue=yes
-- Security: pass (no governance files modified)
-- Static checks: pass
-- Tests: pass or legitimately skipped
-- Code review: no critical/high findings
-
-Auto-merging via squash."
+          BODY=$(printf '%s\n' \
+            "**Dark Factory Validation**: APPROVED (${PASS_LABEL})" \
+            "" \
+            "${SUMMARY}" \
+            "" \
+            "All quality gates passed:" \
+            "- Behavioral (static): solves_issue=yes" \
+            "- Behavioral (E2E via agent-browser): solves_issue=yes" \
+            "- Security: pass (no governance files modified)" \
+            "- Static checks: pass" \
+            "- Tests: pass or legitimately skipped" \
+            "- Code review: no critical/high findings" \
+            "" \
+            "Auto-merging via squash.")
           gh pr review "$PR_NUMBER" --approve --body "$BODY"
           gh pr merge "$PR_NUMBER" --squash --auto --delete-branch
           gh pr edit "$PR_NUMBER" --remove-label "factory:needs-review" --add-label "factory:approved" 2>/dev/null || true
@@ -836,26 +841,28 @@ Auto-merging via squash."
         request_changes)
           # If pass-2 still says request_changes, we've exhausted autonomous fix attempts -> escalate.
           if [ "$PASS_LABEL" = "pass-2" ] || [ "$SHOULD_ESCALATE" = "true" ]; then
-            BODY="**Dark Factory Validation**: ESCALATED TO HUMAN (${PASS_LABEL})
-
-${SUMMARY}
-
-### Escalation reason
-${ESCALATION_REASON:-Autonomous fix pass did not resolve all blocking issues. Human review required.}
-
-### Issues remaining
-${ISSUES}"
+            BODY=$(printf '%s\n' \
+              "**Dark Factory Validation**: ESCALATED TO HUMAN (${PASS_LABEL})" \
+              "" \
+              "${SUMMARY}" \
+              "" \
+              "### Escalation reason" \
+              "${ESCALATION_REASON:-Autonomous fix pass did not resolve all blocking issues. Human review required.}" \
+              "" \
+              "### Issues remaining" \
+              "${ISSUES}")
             gh pr review "$PR_NUMBER" --request-changes --body "$BODY"
             gh pr edit "$PR_NUMBER" --remove-label "factory:needs-review" --add-label "factory:needs-human" 2>/dev/null || true
             echo "PR #$PR_NUMBER: ESCALATED to human after ${PASS_LABEL}"
           else
             # pass-1 said request_changes but somehow fix didn't run — shouldn't happen.
-            BODY="**Dark Factory Validation**: Changes Requested (${PASS_LABEL})
-
-${SUMMARY}
-
-### Issues to fix
-${ISSUES}"
+            BODY=$(printf '%s\n' \
+              "**Dark Factory Validation**: Changes Requested (${PASS_LABEL})" \
+              "" \
+              "${SUMMARY}" \
+              "" \
+              "### Issues to fix" \
+              "${ISSUES}")
             gh pr review "$PR_NUMBER" --request-changes --body "$BODY"
             gh pr edit "$PR_NUMBER" --remove-label "factory:needs-review" --add-label "factory:needs-fix" 2>/dev/null || true
             echo "PR #$PR_NUMBER: CHANGES REQUESTED (${PASS_LABEL})"
@@ -863,14 +870,15 @@ ${ISSUES}"
           ;;
 
         reject)
-          BODY="**Dark Factory Validation**: REJECTED (${PASS_LABEL})
-
-${SUMMARY}
-
-### Blocking issues
-${ISSUES}
-
-This PR cannot be fixed incrementally and has been closed."
+          BODY=$(printf '%s\n' \
+            "**Dark Factory Validation**: REJECTED (${PASS_LABEL})" \
+            "" \
+            "${SUMMARY}" \
+            "" \
+            "### Blocking issues" \
+            "${ISSUES}" \
+            "" \
+            "This PR cannot be fixed incrementally and has been closed.")
           gh pr review "$PR_NUMBER" --request-changes --body "$BODY"
           gh pr close "$PR_NUMBER"
 
@@ -880,17 +888,21 @@ This PR cannot be fixed incrementally and has been closed."
           if [ -n "$ISSUE_NUM" ]; then
             if [ "$SHOULD_ESCALATE" = "true" ]; then
               gh issue edit "$ISSUE_NUM" --add-label "factory:needs-human" 2>/dev/null || true
-              gh issue comment "$ISSUE_NUM" --body "**Dark Factory**: PR #$PR_NUMBER was rejected and escalated to human review (${PASS_LABEL}).
-
-Reason: ${SUMMARY}
-
-${ESCALATION_REASON}"
+              ICOMMENT=$(printf '%s\n' \
+                "**Dark Factory**: PR #$PR_NUMBER was rejected and escalated to human review (${PASS_LABEL})." \
+                "" \
+                "Reason: ${SUMMARY}" \
+                "" \
+                "${ESCALATION_REASON}")
+              gh issue comment "$ISSUE_NUM" --body "$ICOMMENT"
             else
               gh issue reopen "$ISSUE_NUM" 2>/dev/null || true
               gh issue edit "$ISSUE_NUM" --add-label "factory:accepted" --remove-label "factory:in-progress" 2>/dev/null || true
-              gh issue comment "$ISSUE_NUM" --body "**Dark Factory**: PR #$PR_NUMBER was rejected during validation (${PASS_LABEL}). Issue re-queued for another implementation attempt.
-
-Reason: ${SUMMARY}"
+              ICOMMENT=$(printf '%s\n' \
+                "**Dark Factory**: PR #$PR_NUMBER was rejected during validation (${PASS_LABEL}). Issue re-queued for another implementation attempt." \
+                "" \
+                "Reason: ${SUMMARY}")
+              gh issue comment "$ISSUE_NUM" --body "$ICOMMENT"
             fi
           fi
           echo "PR #$PR_NUMBER: REJECTED (${PASS_LABEL}) and closed"
