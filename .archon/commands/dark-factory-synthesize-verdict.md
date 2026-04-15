@@ -29,6 +29,12 @@ Same rules as the upstream reviewers: you do not read implementation plans, code
 
 ## Inputs
 
+### Infrastructure — PR Checkout
+$checkout-pr.output
+
+### Infrastructure — App Start
+$start-app.output
+
 ### Static Checks — Backend
 $static-checks-backend-p1.output
 
@@ -44,6 +50,9 @@ $run-tests-frontend-p1.output
 ### Behavioral Validation (the holdout verdict)
 $behavioral-validation-p1.output
 
+### E2E Behavioral Validation (agent-browser)
+$behavioral-e2e-p1.output
+
 ### Security Check
 $security-check-p1.output
 
@@ -56,6 +65,31 @@ $fetch-base-governance.output
 ---
 
 ## Verdict Rules (apply in order — first match wins)
+
+### REJECT (rule 0) — infrastructure failure, escalate to human
+
+If the validator's own infrastructure did not complete, you CANNOT render a substantive verdict. Check the Infrastructure inputs above:
+
+- `$checkout-pr.output` must contain the literal string `Checked out PR #`. If empty, missing, or lacking that marker → infrastructure failure.
+- `$start-app.output` must contain the literal string `APP_STARTED`. If empty, missing, or lacking that marker → infrastructure failure.
+
+Additionally, if `$static-checks-backend-p1.output`, `$static-checks-frontend-p1.output`, `$run-tests-backend-p1.output`, `$run-tests-frontend-p1.output`, or `$behavioral-e2e-p1.output` is empty (no content at all — meaning the node was skipped because its upstream dependency failed), that is also an infrastructure failure even if `checkout-pr.output` looks fine.
+
+In any of those cases, return:
+
+- `verdict`: `"reject"`
+- `should_escalate`: `true`
+- `escalation_reason`: `"Validator infrastructure failed — checkout-pr or start-app did not complete, so static checks, tests, and E2E regression never ran. Manual investigation required before retrying."`
+- `summary`: `"Validator prerequisites failed; cannot render a substantive verdict."`
+- `static_checks_status`: `"fail"`
+- `tests_status`: `"fail"`
+- `behavioral_status`: `"no"`
+- `e2e_status`: `"no"`
+- `security_status`: `"fail"`
+- `issues_to_fix`: `[]`
+- `reasoning`: `"REJECT rule 0 (infrastructure) fired. [Which specific marker/input was missing and why this blocks a substantive verdict.]"`
+
+This is NOT a defect in the PR under review — it's a validator-side failure. The escalation flag routes it to a human who can investigate the infra issue (stale worktree, port collision, etc.) rather than re-queuing the underlying issue for another implementation attempt. Rule 0 takes absolute precedence over every other rule below; do not even evaluate rules 1-7 if rule 0 fires.
 
 ### REJECT — automatic, no fix attempts, close the PR
 

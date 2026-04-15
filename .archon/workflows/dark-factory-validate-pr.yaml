@@ -158,6 +158,30 @@ nodes:
       # checkout will refuse to overwrite them when the PR adds the same
       # paths as tracked files. Cleaning here makes checkout deterministic.
       git clean -fd .archon/ .claude/ 2>/dev/null || true
+
+      # Stale worktree prune. Archon doesn't always clean up worktrees after
+      # a run completes — even successful runs. If the preceding
+      # fix-github-issue workflow left its worktree pointing at this PR's
+      # branch, `gh pr checkout` will fail with
+      #   fatal: branch 'X' is already used by worktree at '...'
+      # So we proactively discover any other worktree holding this PR's
+      # branch and force-remove it. Idempotent: no-op on a clean repo.
+      PR_BRANCH=$(gh pr view "$PR_NUMBER" --json headRefName -q '.headRefName')
+      if [ -n "$PR_BRANCH" ]; then
+        echo "Checking for stale worktrees holding branch '$PR_BRANCH'..."
+        git worktree prune
+        git worktree list --porcelain | awk -v b="$PR_BRANCH" '
+          /^worktree / {w=$2}
+          $0 == "branch refs/heads/" b {print w}
+        ' | while read -r stale_wt; do
+          if [ -n "$stale_wt" ] && [ "$stale_wt" != "$(pwd)" ]; then
+            echo "Removing stale worktree: $stale_wt"
+            git worktree remove --force "$stale_wt" 2>&1 || true
+          fi
+        done
+        git worktree prune
+      fi
+
       gh pr checkout "$PR_NUMBER"
       echo "Checked out PR #$PR_NUMBER on branch $(git branch --show-current)"
       # Pull infra-only files from origin/main into the worktree so the
@@ -482,6 +506,15 @@ nodes:
   - id: synthesize-verdict-pass-1
     command: dark-factory-synthesize-verdict
     depends_on:
+      # Infrastructure prerequisites — must be present so the synthesizer
+      # can detect whether the app actually ran. The synthesizer command
+      # (dark-factory-synthesize-verdict.md) checks $checkout-pr.output and
+      # $start-app.output and fails closed to reject+escalate if either is
+      # empty or missing its success marker. This prevents the validator
+      # from rendering an "approve" verdict when checkout-pr crashed and
+      # static checks / tests / E2E never ran at all.
+      - checkout-pr
+      - start-app
       - static-checks-backend-p1
       - static-checks-frontend-p1
       - run-tests-backend-p1
@@ -904,23 +937,31 @@ nodes:
             "" \
             "Auto-merging via squash.")
           post_review --approve "$BODY"
-          # gh pr merge --auto requires a non-draft PR. If the factory opened
-          # the PR as draft (the implementer workflow does this until validation
-          # passes), mark it ready first.
+          # The PR may have been opened as a draft by the implementer workflow.
+          # Mark it ready before merging — draft PRs cannot be merged at all.
           IS_DRAFT=$(gh pr view "$PR_NUMBER" --json isDraft -q '.isDraft' 2>/dev/null || echo "false")
           if [ "$IS_DRAFT" = "true" ]; then
             echo "PR #$PR_NUMBER is draft — marking ready for review before merge"
             gh pr ready "$PR_NUMBER"
           fi
+          # Plain squash merge (no --auto). The validator IS the gate — by the
+          # time we reach this branch, every quality gate has already passed,
+          # so we don't need GitHub branch-protection rules to hold the merge
+          # until checks finish. Dropping --auto also means we don't need the
+          # repo to have branch protection configured at all.
           # Don't pass --delete-branch: gh tries to delete the local branch
-          # after queueing the merge, which requires switching off it. In a
-          # worktree where main is checked out elsewhere, that switch fails
-          # and aborts apply-verdict (set -e) before the label swap runs.
-          # Repos with "Automatically delete head branches" enabled (the
-          # factory default) handle the remote deletion server-side anyway.
-          gh pr merge "$PR_NUMBER" --squash --auto || true
+          # after merging, which requires switching off it. In a worktree
+          # where main is checked out elsewhere, that switch fails and aborts
+          # apply-verdict (set -e) before the label swap runs. Repos with
+          # "Automatically delete head branches" enabled handle deletion
+          # server-side anyway.
+          if gh pr merge "$PR_NUMBER" --squash; then
+            echo "PR #$PR_NUMBER: merged via squash"
+          else
+            echo "WARN: squash merge failed for PR #$PR_NUMBER — leaving approved for manual merge" >&2
+          fi
           gh pr edit "$PR_NUMBER" --remove-label "factory:needs-review" --add-label "factory:approved" 2>/dev/null || true
-          echo "PR #$PR_NUMBER: APPROVED (${PASS_LABEL}) and queued for auto-merge"
+          echo "PR #$PR_NUMBER: APPROVED (${PASS_LABEL})"
           ;;
 
         request_changes)
@@ -955,23 +996,36 @@ nodes:
           ;;
 
         reject)
-          BODY=$(printf '%s\n' \
-            "**Dark Factory Validation**: REJECTED (${PASS_LABEL})" \
-            "" \
-            "${SUMMARY}" \
-            "" \
-            "### Blocking issues" \
-            "${ISSUES}" \
-            "" \
-            "This PR cannot be fixed incrementally and has been closed.")
-          post_review --request-changes "$BODY"
-          gh pr close "$PR_NUMBER"
+          # Two reject sub-cases:
+          #   (a) Escalated reject (should_escalate=true): validator itself
+          #       flagged something humans must look at. Includes rule-0
+          #       infrastructure failures and rule-7 hard-invariant breaches.
+          #       PR stays OPEN and gets labeled factory:needs-human. Issue
+          #       also gets factory:needs-human. Don't close anything —
+          #       a human needs to see the PR diff to investigate.
+          #   (b) Normal reject (should_escalate=false): PR is fundamentally
+          #       wrong (bad approach, scope creep, security fail). Close the
+          #       PR, re-queue the underlying issue for another attempt.
+          if [ "$SHOULD_ESCALATE" = "true" ]; then
+            BODY=$(printf '%s\n' \
+              "**Dark Factory Validation**: REJECTED + ESCALATED (${PASS_LABEL})" \
+              "" \
+              "${SUMMARY}" \
+              "" \
+              "### Escalation reason" \
+              "${ESCALATION_REASON}" \
+              "" \
+              "### Findings" \
+              "${ISSUES}" \
+              "" \
+              "This PR is NOT being closed — a human needs to investigate.")
+            post_review --request-changes "$BODY"
+            gh pr edit "$PR_NUMBER" --remove-label "factory:needs-review" --add-label "factory:needs-human" 2>/dev/null || true
 
-          ISSUE_NUM=$(gh pr view "$PR_NUMBER" --json body -q '.body' \
-            | grep -oiE '(fixes|closes|resolves) #[0-9]+' \
-            | grep -oE '[0-9]+' | head -1)
-          if [ -n "$ISSUE_NUM" ]; then
-            if [ "$SHOULD_ESCALATE" = "true" ]; then
+            ISSUE_NUM=$(gh pr view "$PR_NUMBER" --json body -q '.body' \
+              | grep -oiE '(fixes|closes|resolves) #[0-9]+' \
+              | grep -oE '[0-9]+' | head -1)
+            if [ -n "$ISSUE_NUM" ]; then
               gh issue edit "$ISSUE_NUM" --add-label "factory:needs-human" 2>/dev/null || true
               ICOMMENT=$(printf '%s\n' \
                 "**Dark Factory**: PR #$PR_NUMBER was rejected and escalated to human review (${PASS_LABEL})." \
@@ -980,7 +1034,25 @@ nodes:
                 "" \
                 "${ESCALATION_REASON}")
               gh issue comment "$ISSUE_NUM" --body "$ICOMMENT"
-            else
+            fi
+            echo "PR #$PR_NUMBER: REJECTED+ESCALATED (${PASS_LABEL}) — left open for human review"
+          else
+            BODY=$(printf '%s\n' \
+              "**Dark Factory Validation**: REJECTED (${PASS_LABEL})" \
+              "" \
+              "${SUMMARY}" \
+              "" \
+              "### Blocking issues" \
+              "${ISSUES}" \
+              "" \
+              "This PR cannot be fixed incrementally and has been closed.")
+            post_review --request-changes "$BODY"
+            gh pr close "$PR_NUMBER"
+
+            ISSUE_NUM=$(gh pr view "$PR_NUMBER" --json body -q '.body' \
+              | grep -oiE '(fixes|closes|resolves) #[0-9]+' \
+              | grep -oE '[0-9]+' | head -1)
+            if [ -n "$ISSUE_NUM" ]; then
               gh issue reopen "$ISSUE_NUM" 2>/dev/null || true
               gh issue edit "$ISSUE_NUM" --add-label "factory:accepted" --remove-label "factory:in-progress" 2>/dev/null || true
               ICOMMENT=$(printf '%s\n' \
@@ -989,8 +1061,8 @@ nodes:
                 "Reason: ${SUMMARY}")
               gh issue comment "$ISSUE_NUM" --body "$ICOMMENT"
             fi
+            echo "PR #$PR_NUMBER: REJECTED (${PASS_LABEL}) and closed"
           fi
-          echo "PR #$PR_NUMBER: REJECTED (${PASS_LABEL}) and closed"
           ;;
 
         *)
