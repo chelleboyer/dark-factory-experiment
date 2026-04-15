@@ -806,20 +806,31 @@ nodes:
       set -euo pipefail
       PR_NUMBER=$(cat "$ARTIFACTS_DIR/.pr-number")
 
+      # Capture the synthesizer outputs to disk via quoted heredocs so the
+      # JSON survives bash word-splitting / brace expansion. (Archon's
+      # variable substitution is text-based and runs before bash; using
+      # plain shell assignment with quotes results in the original quote
+      # characters being interpreted as part of the shell, which mangles
+      # the JSON. Heredoc with a quoted delimiter sidesteps that.)
+      cat > "$ARTIFACTS_DIR/p1-verdict.json" <<'__P1_VERDICT_EOF__'
+      $synthesize-verdict-pass-1.output
+      __P1_VERDICT_EOF__
+      cat > "$ARTIFACTS_DIR/p2-verdict.json" <<'__P2_VERDICT_EOF__'
+      $synthesize-verdict-pass-2.output
+      __P2_VERDICT_EOF__
+
       # Pick the authoritative verdict. If pass-2 ran (i.e., fix happened),
       # it's authoritative. Otherwise use pass-1.
-      P2_VERDICT='$synthesize-verdict-pass-2.output'
-      P1_VERDICT='$synthesize-verdict-pass-1.output'
-
-      if [ -n "$P2_VERDICT" ] && [ "$P2_VERDICT" != "null" ] && echo "$P2_VERDICT" | jq -e '.verdict' > /dev/null 2>&1; then
-        VERDICT_JSON="$P2_VERDICT"
+      if [ -s "$ARTIFACTS_DIR/p2-verdict.json" ] && jq -e '.verdict' "$ARTIFACTS_DIR/p2-verdict.json" > /dev/null 2>&1; then
+        VERDICT_FILE="$ARTIFACTS_DIR/p2-verdict.json"
         PASS_LABEL="pass-2"
       else
-        VERDICT_JSON="$P1_VERDICT"
+        VERDICT_FILE="$ARTIFACTS_DIR/p1-verdict.json"
         PASS_LABEL="pass-1"
       fi
 
-      echo "$VERDICT_JSON" > "$ARTIFACTS_DIR/verdict.json"
+      cp "$VERDICT_FILE" "$ARTIFACTS_DIR/verdict.json"
+      VERDICT_JSON=$(cat "$VERDICT_FILE")
 
       DECISION=$(echo "$VERDICT_JSON" | jq -r '.verdict')
       SUMMARY=$(echo "$VERDICT_JSON" | jq -r '.summary')
