@@ -212,6 +212,12 @@ nodes:
       # fetch-base-governance artifact BEFORE this checkout, so the
       # holdout property is preserved either way.
       git fetch origin main --quiet
+      # Discard any local changes in infra dirs before overlaying main's
+      # versions. Without this, `git checkout origin/main -- .archon/`
+      # fails when the worktree was created from a stale commit and the
+      # infra files have been modified since (e.g., we just pushed a
+      # workflow fix to main).
+      git checkout -- .archon/ .claude/ 2>/dev/null || true
       git checkout origin/main -- .archon/ .claude/ 2>/dev/null || true
       # Reset any infra path that doesn't exist on main rather than failing.
       echo "Synced .archon/ and .claude/ from origin/main:"
@@ -881,29 +887,19 @@ nodes:
       set -euo pipefail
       PR_NUMBER=$(cat "$ARTIFACTS_DIR/.pr-number")
 
-      # Capture the synthesizer outputs to disk via quoted heredocs so the
-      # JSON survives bash word-splitting / brace expansion. (Archon's
-      # variable substitution is text-based and runs before bash; using
-      # plain shell assignment with quotes results in the original quote
-      # characters being interpreted as part of the shell, which mangles
-      # the JSON. Heredoc with a quoted delimiter sidesteps that.)
+      # Capture the synthesizer outputs to disk. Archon substitutes
+      # $node-id.output before bash runs, wrapping the value in single
+      # quotes with '\'' for embedded apostrophes. Heredoc captures the
+      # raw value; Python cleans quote-wrapping and '\'' escaping so jq
+      # can parse it as valid JSON.
       cat > "$ARTIFACTS_DIR/p1-verdict.json" <<'__P1_VERDICT_EOF__'
       $synthesize-verdict-pass-1.output
       __P1_VERDICT_EOF__
       cat > "$ARTIFACTS_DIR/p2-verdict.json" <<'__P2_VERDICT_EOF__'
       $synthesize-verdict-pass-2.output
       __P2_VERDICT_EOF__
-
-      # Archon wraps substituted node outputs in single quotes for shell
-      # safety. Two things must be cleaned before jq can parse:
-      # 1. Leading/trailing ' wrapper characters.
-      # 2. Internal '\'' sequences (shell idiom for embedding a literal
-      #    single quote inside a single-quoted string). These appear when
-      #    the synthesizer's reasoning contains apostrophes ("don't",
-      #    "mypy's") and produce invalid JSON escape sequences (\').
-      # Python handles both reliably; sed escaping is fragile in YAML.
       for vf in "$ARTIFACTS_DIR/p1-verdict.json" "$ARTIFACTS_DIR/p2-verdict.json"; do
-        [ -f "$vf" ] && python3 -c "import sys,pathlib;p=pathlib.Path(sys.argv[1]);t=p.read_text();t=t.strip(chr(39));t=t.replace(chr(39)+chr(92)+chr(39)+chr(39),chr(39));p.write_text(t)" "$vf"
+        [ -f "$vf" ] && python3 -c "import sys,pathlib;p=pathlib.Path(sys.argv[1]);t=p.read_text().strip();t=t.strip(chr(39));t=t.replace(chr(39)+chr(92)+chr(39)+chr(39),chr(39));p.write_text(t)" "$vf"
       done
 
       # Pick the authoritative verdict. If pass-2 ran (i.e., fix happened),
@@ -918,7 +914,7 @@ nodes:
 
       # Defensive: if the selected verdict file is empty or unparseable,
       # an upstream node (checkout-pr, start-app, synthesize-verdict-*)
-      # failed and its $node.output substitution resolved to nothing. The
+      # failed and its output substitution resolved to nothing. The
       # downstream jq / case logic assumes a well-formed object, so without
       # this guard apply-verdict hits secondary parse errors and the broken
       # run leaves the PR in a stuck state. Write a hardcoded fallback
