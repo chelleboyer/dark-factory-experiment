@@ -108,11 +108,8 @@ class TestRetrieveHybrid:
 
     async def test_raises_when_database_url_unset(self, monkeypatch):
         """retrieve_hybrid raises RuntimeError if DATABASE_URL is not set."""
-        # Temporarily unset DATABASE_URL (env var AND cached config constant)
+        # Temporarily unset DATABASE_URL
         monkeypatch.delenv("DATABASE_URL", raising=False)
-        import backend.config
-
-        monkeypatch.setattr(backend.config, "DATABASE_URL", "")
 
         with pytest.raises(RuntimeError, match="Hybrid retrieval requires Postgres"):
             await retrieve_hybrid("test query", [0.1] * 1536, top_k=5)

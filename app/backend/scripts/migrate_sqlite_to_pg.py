@@ -26,7 +26,6 @@ via dump_sqlite.sh before running.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
 from pathlib import Path
 
 import aiosqlite
@@ -52,7 +51,7 @@ async def _migrate_table(
     table: str,
     select_sql: str,
     insert_sql: str,
-    transform: Callable[[dict], tuple],
+    transform: callable,
 ) -> int:
     """Migrate one table: SELECT from SQLite, INSERT into Postgres.
 
@@ -84,7 +83,7 @@ async def _migrate_table(
         )
 
     print(f"  {table}: {pg_count} rows migrated")
-    return pg_count  # type: ignore[no-any-return]
+    return pg_count
 
 
 async def migrate(sqlite_path: Path, pg_dsn: str) -> None:

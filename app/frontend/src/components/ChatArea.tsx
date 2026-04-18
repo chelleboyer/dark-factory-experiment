@@ -1,4 +1,4 @@
-import { type MutableRefObject, useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { useMessages } from '../hooks/useMessages';
 import { useStreamingResponse } from '../hooks/useStreamingResponse';
@@ -237,10 +237,9 @@ function InlineError({ message, onRetry }: InlineErrorProps) {
 // ── Main ChatArea component ───────────────────────────────────────
 interface ChatAreaProps {
   conversationId?: string;
-  refreshConversationsRef?: MutableRefObject<(() => Promise<void>) | null>;
 }
 
-export function ChatArea({ conversationId, refreshConversationsRef }: ChatAreaProps) {
+export function ChatArea({ conversationId }: ChatAreaProps) {
   const { messages, setMessages, loading, error, conversation } = useMessages(
     conversationId || null,
   );
@@ -333,8 +332,6 @@ export function ChatArea({ conversationId, refreshConversationsRef }: ChatAreaPr
         pendingUserMsgIdRef.current = null;
         // Pull fresh quota counter so the sidebar updates after each send.
         refreshAuth();
-        // Refresh conversations list so sidebar shows auto-generated title.
-        refreshConversationsRef?.current?.();
       } catch (e) {
         // Remove the optimistic user message
         if (pendingUserMsgIdRef.current) {
@@ -364,16 +361,7 @@ export function ChatArea({ conversationId, refreshConversationsRef }: ChatAreaPr
         setTimeout(() => chatInputRef.current?.setInputText(content), 50);
       }
     },
-    [
-      conversationId,
-      isStreaming,
-      setMessages,
-      startStream,
-      scrollToBottom,
-      addToast,
-      refreshAuth,
-      refreshConversationsRef,
-    ],
+    [conversationId, isStreaming, setMessages, startStream, scrollToBottom, addToast, refreshAuth],
   );
 
   // ── Retry failed message — re-attempt the API call with same content ──
