@@ -280,6 +280,49 @@ nodes:
     bash: |
       set -euo pipefail
       export PATH="$HOME/.local/bin:$PATH"
+
+      # Load the validation-sandbox env file. The backend now hard-requires
+      # DATABASE_URL (Postgres) and other secrets at import time; without this
+      # sourcing step, uvicorn crashes before the health check ever responds
+      # and the E2E reviewer never gets a running app to drive. That used to
+      # silently degrade to `e2e_status: "not_e2e_testable"` and slip past the
+      # synthesizer — apply-verdict now has a deterministic backstop, but the
+      # real fix is making start-app actually work.
+      #
+      # The env file lives OUTSIDE the repo (it contains secrets and must not
+      # be committed). Path is overridable via DARK_FACTORY_VALIDATION_ENV;
+      # defaults to /opt/dark-factory/validation.env on the VPS. Any VPS where
+      # this workflow runs must have that file populated with at minimum:
+      #   DATABASE_URL, OPENROUTER_API_KEY, JWT_SECRET, SUPADATA_API_KEY,
+      #   YOUTUBE_CHANNEL_ID
+      # Use a DEDICATED validation database URL — not production — so E2E runs
+      # can't pollute real user data.
+      VALIDATION_ENV="${DARK_FACTORY_VALIDATION_ENV:-/opt/dark-factory/validation.env}"
+      if [ -f "$VALIDATION_ENV" ]; then
+        echo "Loading validation env from $VALIDATION_ENV"
+        set -a
+        # shellcheck disable=SC1090
+        . "$VALIDATION_ENV"
+        set +a
+      else
+        echo "WARN: validation env file not found at $VALIDATION_ENV" >&2
+        echo "WARN: backend will likely fail to boot without DATABASE_URL and friends" >&2
+      fi
+
+      # Fail fast with a clear message if required vars are missing. Better
+      # to die here with a diagnosable error than to watch uvicorn crash at
+      # import and confuse the E2E reviewer into `not_e2e_testable`.
+      REQUIRED_VARS=(DATABASE_URL OPENROUTER_API_KEY JWT_SECRET SUPADATA_API_KEY YOUTUBE_CHANNEL_ID)
+      MISSING=()
+      for v in "${REQUIRED_VARS[@]}"; do
+        if [ -z "${!v:-}" ]; then MISSING+=("$v"); fi
+      done
+      if [ ${#MISSING[@]} -gt 0 ]; then
+        echo "ERROR: required env vars missing for validation sandbox: ${MISSING[*]}" >&2
+        echo "ERROR: populate $VALIDATION_ENV (outside the repo) and retry." >&2
+        exit 1
+      fi
+
       # Normal path: ports come from the find-free-ports node via artifacts.
       # Demo/manual path: if the port files are missing (e.g. someone ran this
       # node in isolation), fall back to sensible defaults and write them so
@@ -942,6 +985,45 @@ nodes:
         .issues_to_fix
         | map("- **\(.severity)** [\(.category)]\(if .file then " (`\(.file)`)" else "" end): \(.description)")
         | join("\n")')
+
+      # ──────────────────────────────────────────────────────────────────
+      # DETERMINISTIC INFRASTRUCTURE BACKSTOP
+      # ──────────────────────────────────────────────────────────────────
+      # The synthesize-verdict command file has a "rule 0" that says any
+      # validation run where start-app never emitted APP_STARTED must render
+      # reject+escalate (see dark-factory-synthesize-verdict.md). That rule
+      # was empirically ignored at least once — the AI returned
+      # e2e_status: "not_e2e_testable" and verdict: "approve" while the
+      # backend had crashed at import with `RuntimeError: DATABASE_URL is
+      # not set`. An auto-merged PR that was never actually driven through
+      # agent-browser is exactly the failure mode FACTORY_RULES §4 exists
+      # to prevent, so rule-0 needs a non-AI enforcement layer.
+      #
+      # This block is that layer: deterministic bash reads start-app's
+      # output directly and flips any approve → reject+escalate when the
+      # APP_STARTED marker is absent. Keep it simple — one marker, one
+      # grep, one override. Anything more elaborate invites new bugs.
+      cat > "$ARTIFACTS_DIR/.start-app-output" <<'__START_APP_OUTPUT_EOF__'
+      $start-app.output
+      __START_APP_OUTPUT_EOF__
+      if grep -q "APP_STARTED" "$ARTIFACTS_DIR/.start-app-output"; then
+        APP_DID_START="true"
+      else
+        APP_DID_START="false"
+      fi
+      echo "INFRA_BACKSTOP: app_did_start=$APP_DID_START decision=$DECISION"
+
+      if [ "$DECISION" = "approve" ] && [ "$APP_DID_START" != "true" ]; then
+        echo "INFRA_BACKSTOP_OVERRIDE: start-app did not emit APP_STARTED but synthesizer rendered approve — overriding to reject+escalate." >&2
+        DECISION="reject"
+        SHOULD_ESCALATE="true"
+        ESCALATION_REASON="Deterministic infrastructure backstop fired: start-app output lacked the APP_STARTED marker, so no agent-browser E2E regression could have actually run against a live app. The synthesize-verdict node rendered an approve verdict anyway (rule 0 of dark-factory-synthesize-verdict.md was not honored). A human must investigate both the infrastructure failure (check \$ARTIFACTS_DIR/app-logs/backend.log and the validation.env file) and the synthesizer's failure to catch it."
+        SUMMARY="Infrastructure backstop override: start-app never reached APP_STARTED, so the agent-browser E2E regression required by FACTORY_RULES §3.3 and §4 could not have run. Auto-approve blocked."
+        ISSUES=$(printf '%s\n' \
+          "- **critical** [e2e]: start-app node did not emit APP_STARTED — backend or frontend failed to boot and the mandatory agent-browser regression never ran." \
+          "- **critical** [e2e]: synthesize-verdict rendered approve despite the missing APP_STARTED marker — review why rule 0 of the synthesize-verdict command did not fire.")
+      fi
+      # ──────────────────────────────────────────────────────────────────
 
       # GitHub forbids reviewing your own PR (addPullRequestReview GraphQL error).
       # When the bot identity authored the PR, fall back to posting a regular
