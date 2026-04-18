@@ -32,13 +32,23 @@ target_metadata: dict | None = None
 
 
 def get_database_url() -> str:
-    """Read DATABASE_URL from the Alembic config's sqlalchemy.url, or from environment."""
-    url = config.get_main_option("sqlalchemy.url", "")
-    if not url:
-        import os
+    """Resolve DATABASE_URL, preferring the environment over the ini value.
 
-        url = os.environ.get("DATABASE_URL", "")
-    return url
+    alembic.ini ships with `sqlalchemy.url = env(DATABASE_URL)`, but Alembic
+    does NOT natively expand `env(...)` — it returns the literal string, which
+    SQLAlchemy then fails to parse. So: read os.environ first, and only fall
+    back to the ini if the env var is unset AND the ini value looks like a
+    real URL (not the unresolved `env(...)` placeholder).
+    """
+    import os
+
+    url = os.environ.get("DATABASE_URL", "")
+    if url:
+        return url
+    ini_url = config.get_main_option("sqlalchemy.url", "")
+    if ini_url and not ini_url.startswith("env("):
+        return ini_url
+    return ""
 
 
 run_async_engine: create_async_engine | None = None
@@ -59,6 +69,11 @@ async def run_async_migrations() -> None:
             raise RuntimeError("DATABASE_URL is not set. Cannot run Alembic migrations.")
         # Create a dedicated pool for migrations (separate from app pool).
         # NullPool so each check-out is a fresh connection.
+        # SQLAlchemy's async engine needs an explicit async driver.
+        # The app's asyncpg code accepts the plain postgresql:// URL, so we
+        # normalize here rather than forcing users to maintain two URLs.
+        if url.startswith("postgresql://"):
+            url = "postgresql+asyncpg://" + url[len("postgresql://") :]
         run_async_engine = create_async_engine(
             url,
             poolclass=pool.NullPool,
@@ -79,7 +94,7 @@ def do_run_migrations(connection) -> None:
         compare_type=True,
         render_as_batch=True,  # Handles SERial/Serial mismatches gracefully
     )
-    with context.begin_migration():
+    with context.begin_transaction():
         context.run_migrations()
 
 
