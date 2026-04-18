@@ -133,6 +133,48 @@ nodes:
     bash: |
       set -euo pipefail
       export PATH="$HOME/.local/bin:$PATH"
+
+      # Load the validation-sandbox env file. The backend hard-requires
+      # DATABASE_URL (Postgres) and other secrets at import time; without
+      # sourcing validation.env, uvicorn crashes at backend/config.py
+      # before the /api/health endpoint ever responds and all four agent-
+      # browser scenarios get skipped with no evidence. Same pattern as
+      # validate-pr's start-app (commit 3fc03a0).
+      #
+      # Path is overridable via DARK_FACTORY_VALIDATION_ENV; defaults to
+      # /opt/dark-factory/validation.env on the VPS. That file must exist
+      # outside the repo and contain at minimum:
+      #   DATABASE_URL, OPENROUTER_API_KEY, JWT_SECRET, SUPADATA_API_KEY,
+      #   YOUTUBE_CHANNEL_ID
+      # Use a DEDICATED validation database — not production — so the
+      # weekly comprehensive test can't pollute real user data even when
+      # scenarios create conversations / ingest videos.
+      VALIDATION_ENV="${DARK_FACTORY_VALIDATION_ENV:-/opt/dark-factory/validation.env}"
+      if [ -f "$VALIDATION_ENV" ]; then
+        echo "Loading validation env from $VALIDATION_ENV"
+        set -a
+        # shellcheck disable=SC1090
+        . "$VALIDATION_ENV"
+        set +a
+      else
+        echo "WARN: validation env file not found at $VALIDATION_ENV" >&2
+        echo "WARN: backend will likely fail to boot without DATABASE_URL and friends" >&2
+      fi
+
+      # Fail fast with a clear message if required vars are missing, so
+      # this node's error lands in the comprehensive-test-report rather
+      # than a cryptic uvicorn stacktrace inside $ARTIFACTS_DIR/app-logs.
+      REQUIRED_VARS=(DATABASE_URL OPENROUTER_API_KEY JWT_SECRET SUPADATA_API_KEY YOUTUBE_CHANNEL_ID)
+      MISSING=()
+      for v in "${REQUIRED_VARS[@]}"; do
+        if [ -z "${!v:-}" ]; then MISSING+=("$v"); fi
+      done
+      if [ ${#MISSING[@]} -gt 0 ]; then
+        echo "ERROR: required env vars missing for comprehensive-test sandbox: ${MISSING[*]}" >&2
+        echo "ERROR: populate $VALIDATION_ENV (outside the repo) and retry." >&2
+        exit 1
+      fi
+
       BACKEND_PORT=$(cat "$ARTIFACTS_DIR/.backend-port")
       FRONTEND_PORT=$(cat "$ARTIFACTS_DIR/.frontend-port")
 
