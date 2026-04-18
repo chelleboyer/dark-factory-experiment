@@ -51,6 +51,8 @@ services:
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       SUPADATA_API_KEY: ${SUPADATA_API_KEY:-}
+      YOUTUBE_CHANNEL_ID: ${YOUTUBE_CHANNEL_ID:-}
+      CHANNEL_SYNC_TYPE: ${CHANNEL_SYNC_TYPE:-video}
       FRONTEND_DIST: /app/frontend/dist
       # DATABASE_URL is now the sole database connection (no SQLite).
       # Points at the in-compose postgres service by DNS name.
@@ -81,6 +83,8 @@ services:
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       SUPADATA_API_KEY: ${SUPADATA_API_KEY:-}
+      YOUTUBE_CHANNEL_ID: ${YOUTUBE_CHANNEL_ID:-}
+      CHANNEL_SYNC_TYPE: ${CHANNEL_SYNC_TYPE:-video}
       FRONTEND_DIST: /app/frontend/dist
       # DATABASE_URL is now the sole database connection (no SQLite).
       # Points at the in-compose postgres service by DNS name.
