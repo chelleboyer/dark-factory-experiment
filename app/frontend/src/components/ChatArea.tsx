@@ -11,11 +11,7 @@ import { CitationModal } from './CitationModal';
 import { Message } from './Message';
 
 function formatResetTime(iso: string): string {
-  try {
-    return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  } catch {
-    return iso;
-  }
+  return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) || iso;
 }
 
 // ── Skeleton message rows ─────────────────────────────────────────
@@ -252,7 +248,7 @@ export function ChatArea({ conversationId, refreshConversationsRef }: ChatAreaPr
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
-  const [, forceUpdate] = useState(0);
+  const [, setForceUpdate] = useState(0);
 
   // Inline error state (for failed sends)
   const [inlineError, setInlineError] = useState<string | null>(null);
@@ -263,12 +259,18 @@ export function ChatArea({ conversationId, refreshConversationsRef }: ChatAreaPr
   const [selectedCitation, setSelectedCitation] = useState<Citation | null>(null);
 
   // ── Auto-scroll logic ──
+  // Defer scroll to the next paint cycle so streaming DOM updates are applied first.
+  // Without rAF, scroll fires before React's DOM reconciliation completes (issue #76).
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     bottomRef.current?.scrollIntoView({ behavior, block: 'end' });
   }, []);
 
   useEffect(() => {
-    if (autoScrollRef.current) scrollToBottom();
+    if (autoScrollRef.current) {
+      requestAnimationFrame(() => {
+        scrollToBottom();
+      });
+    }
   }, [messages.length, streamingContent, scrollToBottom]);
 
   useEffect(() => {
@@ -284,7 +286,7 @@ export function ChatArea({ conversationId, refreshConversationsRef }: ChatAreaPr
     const shouldAutoScroll = distFromBottom < 100;
     if (shouldAutoScroll !== autoScrollRef.current) {
       autoScrollRef.current = shouldAutoScroll;
-      forceUpdate((n) => n + 1);
+      setForceUpdate((n) => n + 1);
     }
   }, []);
 
