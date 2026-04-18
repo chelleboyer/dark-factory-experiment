@@ -28,9 +28,15 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-async def _acquire() -> asyncpg.Connection:
-    """Acquire a connection from the pool."""
-    return await get_pg_pool().acquire()
+def _acquire() -> asyncpg.pool.PoolAcquireContext:
+    """Return the pool's acquire context manager.
+
+    Callers must use it as `async with _acquire() as conn:` — NOT
+    `async with await _acquire()`. asyncpg's pool.acquire() already returns
+    an async context manager, and awaiting it yields a PoolConnectionProxy
+    which is not itself a context manager.
+    """
+    return get_pg_pool().acquire()
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +53,7 @@ async def create_video(
 ) -> dict:
     vid_id = _new_id()
     now = _now()
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         await conn.execute(
             """
             INSERT INTO videos (id, title, description, url, transcript, created_at)
@@ -71,7 +77,7 @@ async def create_video(
 
 
 async def get_video(video_id: str) -> dict | None:
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         row = await conn.fetchrow(
             "SELECT * FROM videos WHERE id = $1",
             video_id,
@@ -81,12 +87,12 @@ async def get_video(video_id: str) -> dict | None:
 
 async def delete_video(video_id: str) -> None:
     """Delete a video and all its associated chunks (FK cascade handles chunks)."""
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         await conn.execute("DELETE FROM videos WHERE id = $1", video_id)
 
 
 async def list_videos() -> list[dict]:
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, title, description, url, created_at FROM videos ORDER BY created_at DESC"
         )
@@ -94,7 +100,7 @@ async def list_videos() -> list[dict]:
 
 
 async def count_videos() -> int:
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         row = await conn.fetchrow("SELECT COUNT(*) FROM videos")
     return row[0] if row else 0
 
@@ -116,7 +122,7 @@ async def create_chunk(
 ) -> dict:
     chunk_id = _new_id()
     embedding_json = json.dumps(embedding)
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         await conn.execute(
             """
             INSERT INTO chunks (id, video_id, content, embedding, chunk_index, start_seconds, end_seconds, snippet)
@@ -145,7 +151,7 @@ async def create_chunk(
 
 async def list_chunks() -> list[dict]:
     """Return all chunks with their embeddings (deserialized)."""
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, video_id, content, embedding, chunk_index, start_seconds, end_seconds, snippet FROM chunks"
         )
@@ -158,7 +164,7 @@ async def list_chunks() -> list[dict]:
 
 
 async def list_chunks_for_video(video_id: str) -> list[dict]:
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT id, video_id, content, embedding, chunk_index, start_seconds, end_seconds, snippet
@@ -177,7 +183,7 @@ async def list_chunks_for_video(video_id: str) -> list[dict]:
 
 
 async def count_chunks() -> int:
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         row = await conn.fetchrow("SELECT COUNT(*) FROM chunks")
     return row[0] if row else 0
 
@@ -189,7 +195,7 @@ async def count_chunks() -> int:
 
 async def list_videos_admin() -> list[dict]:
     """Videos with chunk_count, newest first. Admin library listing."""
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT v.id, v.title, v.description, v.url, v.created_at,
@@ -203,7 +209,7 @@ async def list_videos_admin() -> list[dict]:
 
 async def delete_video_cascade(video_id: str) -> bool:
     """Delete a video and its chunks (FK ON DELETE CASCADE). Returns False if not found."""
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         result = await conn.execute("DELETE FROM videos WHERE id = $1", video_id)
         return result != "DELETE 0"
 
@@ -218,7 +224,7 @@ async def replace_chunks_for_video(
     Caller is responsible for fetching/chunking/embedding BEFORE invoking this
     so a Supadata or OpenRouter failure cannot leave the video chunkless.
     """
-    async with await _acquire() as conn, conn.transaction():
+    async with _acquire() as conn, conn.transaction():
         await conn.execute("DELETE FROM chunks WHERE video_id = $1", video_id)
         for c in chunks:
             await conn.execute(
@@ -245,7 +251,7 @@ async def replace_chunks_for_video(
 async def create_conversation(*, user_id: str, title: str = "New Conversation") -> dict:
     conv_id = _new_id()
     now = _now()
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         await conn.execute(
             """
             INSERT INTO conversations (id, user_id, title, created_at, updated_at)
@@ -268,7 +274,7 @@ async def create_conversation(*, user_id: str, title: str = "New Conversation") 
 
 async def get_conversation(conv_id: str, user_id: str) -> dict | None:
     """Return the conversation only if it belongs to the given user."""
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         row = await conn.fetchrow(
             "SELECT * FROM conversations WHERE id = $1 AND user_id = $2",
             conv_id,
@@ -278,7 +284,7 @@ async def get_conversation(conv_id: str, user_id: str) -> dict | None:
 
 
 async def list_conversations(user_id: str) -> list[dict]:
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT c.*,
@@ -298,7 +304,7 @@ async def list_conversations(user_id: str) -> list[dict]:
 
 async def update_conversation_title(conv_id: str, user_id: str, title: str) -> bool:
     """Rename a conversation. Returns False if it does not belong to the user."""
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         result = await conn.execute(
             "UPDATE conversations SET title = $1, updated_at = $2 WHERE id = $3 AND user_id = $4",
             title,
@@ -311,7 +317,7 @@ async def update_conversation_title(conv_id: str, user_id: str, title: str) -> b
 
 async def touch_conversation(conv_id: str, user_id: str) -> None:
     """Update the updated_at timestamp (scoped to owner; silent no-op otherwise)."""
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         await conn.execute(
             "UPDATE conversations SET updated_at = $1 WHERE id = $2 AND user_id = $3",
             _now(),
@@ -321,7 +327,7 @@ async def touch_conversation(conv_id: str, user_id: str) -> None:
 
 
 async def delete_conversation(conv_id: str, user_id: str) -> bool:
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         result = await conn.execute(
             "DELETE FROM conversations WHERE id = $1 AND user_id = $2",
             conv_id,
@@ -363,7 +369,7 @@ async def create_message(
     """Insert a message. Returns None if the conversation does not belong to the user."""
     msg_id = _new_id()
     now = _now()
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         # Verify ownership atomically — INSERT only succeeds if the conversation
         # row exists for this user. Prevents cross-user message injection even
         # if a route handler forgets to check.
@@ -397,7 +403,7 @@ async def create_message(
 
 async def list_messages(conversation_id: str, user_id: str) -> list[dict]:
     """Return messages only if the conversation belongs to the given user."""
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT m.*
@@ -419,7 +425,7 @@ async def list_messages(conversation_id: str, user_id: str) -> list[dict]:
 
 async def create_sync_run(*, sync_run_id: str, started_at: str) -> dict:
     """Create a new channel sync run record."""
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         await conn.execute(
             """
             INSERT INTO channel_sync_runs (id, status, videos_total, videos_new, videos_error, started_at)
@@ -449,7 +455,7 @@ async def update_sync_run(
     videos_error: int = 0,
 ) -> bool:
     """Update channel sync run counts and optionally mark as finished."""
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         result = await conn.execute(
             """
             UPDATE channel_sync_runs
@@ -468,7 +474,7 @@ async def update_sync_run(
 
 async def list_sync_runs(limit: int = 10) -> list[dict]:
     """List recent channel sync runs."""
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT * FROM channel_sync_runs
@@ -494,7 +500,7 @@ async def create_sync_video(
     """Record a video within a sync run."""
     vid_id = _new_id()
     now = _now()
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         await conn.execute(
             """
             INSERT INTO channel_sync_videos (id, sync_run_id, youtube_video_id, status, created_at)
@@ -520,7 +526,7 @@ async def update_sync_video_status(
     video_id: str, status: str, error_message: str | None = None
 ) -> bool:
     """Update a sync video's status, optionally recording an error."""
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         result = await conn.execute(
             "UPDATE channel_sync_videos SET status = $1, error_message = $2 WHERE id = $3",
             status,
@@ -537,7 +543,7 @@ async def get_video_by_youtube_id(youtube_video_id: str) -> dict | None:
     Looks up a video by searching for *youtube_video_id* in the URL column
     (assumes YouTube watch URL format ?v={id}). Returns None if not found.
     """
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         row = await conn.fetchrow(
             "SELECT * FROM videos WHERE url LIKE $1",
             f"%{youtube_video_id}%",
@@ -547,7 +553,7 @@ async def get_video_by_youtube_id(youtube_video_id: str) -> dict | None:
 
 async def list_sync_videos_for_run(sync_run_id: str) -> list[dict]:
     """List all sync video records for a given sync run."""
-    async with await _acquire() as conn:
+    async with _acquire() as conn:
         rows = await conn.fetch(
             "SELECT * FROM channel_sync_videos WHERE sync_run_id = $1 ORDER BY created_at",
             sync_run_id,
