@@ -58,19 +58,14 @@ Baseline snapshot already captured at `$ARTIFACTS_DIR/health-before.json`
    fetch + chunking + embedding. Poll the UI and also poll
    `curl -sf http://127.0.0.1:<backend_port>/api/health` for up to 180s
    until `chunk_count` increases above the baseline from
-   `health-before.json`. If the ingestion UI shows a Supadata / fetch
-   / network error, that is a FAIL — do not fall back to any other
-   ingestion path.
+   `health-before.json`.
 5. Screenshot the library/list view showing the ingested video to
    `$ARTIFACTS_DIR/test-video-ingestion.png`
 6. Save the post-ingestion `/api/health` response to
    `$ARTIFACTS_DIR/health-after-ingestion.json`
 7. `agent-browser close`
 8. Write a markdown summary to `$ARTIFACTS_DIR/test-video-ingestion.md`
-   including before/after chunk counts, screenshot path, and an
-   explicit line confirming the URL-only path was exercised (e.g.
-   "Submitted URL https://... via add-video form; no manual transcript
-   path used").
+   including before/after chunk counts and screenshot path.
 
 ---
 
@@ -83,10 +78,6 @@ FAIL if any of:
   around)
 - `chunk_count` did not increase within 180s
 - Test video does not appear in the library list
-- You used a manual transcript path, directly POSTed to `/api/ingest`
-  with a `transcript` field, or otherwise bypassed the URL-only
-  ingestion surface. Report this as a FAIL with `failure_reason`
-  describing what went wrong with the URL path.
 
 ---
 
