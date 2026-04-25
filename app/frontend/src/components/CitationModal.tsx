@@ -6,7 +6,7 @@ interface CitationModalProps {
   onClose: () => void;
 }
 
-function formatTimestamp(seconds: number): string {
+export function formatTimestamp(seconds: number): string {
   const s = Math.floor(seconds);
   const mins = Math.floor(s / 60);
   const secs = s % 60;
@@ -15,21 +15,21 @@ function formatTimestamp(seconds: number): string {
 
 export function CitationModal({ citation, onClose }: CitationModalProps) {
   // Extract YouTube video ID from URL (format: https://www.youtube.com/watch?v=<id>)
-  const videoId = (() => {
-    try {
-      return new URL(citation.video_url).searchParams.get('v') ?? '';
-    } catch {
-      console.warn('[CitationModal] Could not parse video URL:', citation.video_url);
-      return '';
-    }
-  })();
+  let videoId = '';
+  try {
+    videoId = new URL(citation.video_url).searchParams.get('v') ?? '';
+  } catch {
+    console.warn('[CitationModal] Could not parse video URL:', citation.video_url);
+  }
+
+  const startSeconds = Math.floor(citation.start_seconds);
 
   const embedUrl = videoId
-    ? `https://www.youtube.com/embed/${videoId}?start=${Math.floor(citation.start_seconds)}&autoplay=1`
+    ? `https://www.youtube.com/embed/${videoId}?start=${startSeconds}&autoplay=1`
     : '';
 
   const externalUrl = videoId
-    ? `https://www.youtube.com/watch?v=${videoId}&t=${Math.floor(citation.start_seconds)}s`
+    ? `https://www.youtube.com/watch?v=${videoId}&t=${startSeconds}s`
     : '';
 
   // Close on ESC key
@@ -65,7 +65,7 @@ export function CitationModal({ citation, onClose }: CitationModalProps) {
       aria-label="Video citation"
     >
       <div
-        className="bg-slate-800 border border-white/10 rounded-xl p-6 w-[640px] max-w-[calc(100vw-48px)]"
+        className="bg-slate-800 border border-white/10 rounded-xl p-6 w-[640px] max-w-[calc(100vw-48px)] max-h-[90vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -85,35 +85,29 @@ export function CitationModal({ citation, onClose }: CitationModalProps) {
           </button>
         </div>
 
-        {/* Content: YouTube iframe (left) + transcript (right) */}
-        <div className="flex gap-4 mb-4" style={{ maxHeight: 360 }}>
-          {/* YouTube iframe */}
-          <div className="flex-1 min-w-0">
+        {/* Content: YouTube iframe (top) + transcript (bottom) */}
+        <div className="flex-1 min-h-0 flex flex-col gap-4 mb-4 overflow-y-auto">
+          {/* YouTube iframe — 16:9 aspect ratio container */}
+          <div className="w-full aspect-video">
             {embedUrl ? (
               <iframe
                 src={embedUrl}
                 allow="autoplay; encrypted-media"
                 allowFullScreen
                 title="YouTube video player"
-                className="w-full rounded-lg"
-                style={{ height: '100%', minHeight: 200 }}
+                className="w-full h-full rounded-lg"
               />
             ) : (
-              <div
-                className="w-full flex items-center justify-center bg-slate-900 rounded-lg text-slate-500 text-sm"
-                style={{ height: 200 }}
-              >
+              <div className="w-full h-full flex items-center justify-center bg-slate-900 rounded-lg text-slate-500 text-sm">
                 Video unavailable
               </div>
             )}
           </div>
 
           {/* Transcript snippet */}
-          <div className="flex-1 min-w-0 overflow-y-auto" style={{ maxHeight: 360 }}>
-            <p
-              className="text-slate-300 text-sm leading-relaxed m-0"
-              style={{ whiteSpace: 'pre-wrap' }}
-            >
+          <div>
+            <h4 className="text-slate-200 text-sm font-semibold mb-1">Transcript Excerpt</h4>
+            <p className="text-slate-300 text-sm leading-relaxed m-0 whitespace-pre-wrap">
               {snippetDisplay}
             </p>
           </div>
