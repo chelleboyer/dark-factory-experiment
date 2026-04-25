@@ -34,6 +34,42 @@ function formatTimestamp(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
+// Two-tier citation render (issue #176): Tier 1 "Sources cited" (visible by
+// default) when any chunk has is_cited=true; Tier 2 "All sources consulted"
+// uses the existing toggle. Falls back to the legacy flat list when no chunk
+// is marked (legacy data or model-forgot-markers fallback).
+function citationChip(
+  citation: Citation,
+  i: number,
+  onCitationClick: ((c: Citation) => void) | undefined,
+  dimmed: boolean,
+) {
+  return (
+    <button
+      key={`${citation.chunk_id}-${i}`}
+      onClick={() => onCitationClick?.(citation)}
+      title={`${citation.video_title} at ${formatTimestamp(citation.start_seconds)}\n${citation.snippet}`}
+      style={{
+        display: 'inline-block',
+        padding: '3px 10px',
+        border: dimmed ? '1px solid rgba(148,163,184,0.4)' : '1px solid #3b82f6',
+        borderRadius: 20,
+        fontSize: 12,
+        color: dimmed ? '#94a3b8' : '#f1f5f9',
+        background: dimmed ? 'rgba(148,163,184,0.06)' : 'rgba(59,130,246,0.1)',
+        maxWidth: 220,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        cursor: 'pointer',
+        fontFamily: 'inherit',
+      }}
+    >
+      {formatTimestamp(citation.start_seconds)} — {citation.video_title}
+    </button>
+  );
+}
+
 function SourceCitations({
   sources,
   onCitationClick,
@@ -45,74 +81,72 @@ function SourceCitations({
 
   if (!sources || sources.length === 0) return null;
 
+  const cited = sources.filter((s) => s.is_cited === true);
+  const consulted = sources.filter((s) => s.is_cited !== true);
+  const showTwoTier = cited.length > 0;
+
   return (
     <div style={{ marginTop: 10, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 8 }}>
-      {/* Toggle button */}
-      <button
-        onClick={() => setExpanded((v) => !v)}
-        style={{
-          background: 'transparent',
-          border: 'none',
-          cursor: 'pointer',
-          color: '#94a3b8',
-          fontSize: 12,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 5,
-          padding: 0,
-          transition: 'color 0.15s',
-        }}
-        onMouseEnter={(e) => (e.currentTarget.style.color = '#f1f5f9')}
-        onMouseLeave={(e) => (e.currentTarget.style.color = '#94a3b8')}
-        aria-expanded={expanded}
-        aria-label={expanded ? 'Collapse sources' : 'Expand sources'}
-      >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 12 12"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
+      {showTwoTier && (
+        <>
+          <div style={{ color: '#94a3b8', fontSize: 12, marginBottom: 6 }}>
+            Sources cited ({cited.length})
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+            {cited.map((c, i) => citationChip(c, i, onCitationClick, false))}
+          </div>
+        </>
+      )}
+
+      {/* Toggle button (Tier 2 / legacy) */}
+      {(!showTwoTier || consulted.length > 0) && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
           style={{
-            transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
-            transition: 'transform 0.2s',
+            background: 'transparent',
+            border: 'none',
+            cursor: 'pointer',
+            color: '#94a3b8',
+            fontSize: 12,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+            padding: 0,
+            transition: 'color 0.15s',
           }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = '#f1f5f9')}
+          onMouseLeave={(e) => (e.currentTarget.style.color = '#94a3b8')}
+          aria-expanded={expanded}
+          aria-label={expanded ? 'Collapse sources' : 'Expand sources'}
         >
-          <polyline points="4,2 8,6 4,10" />
-        </svg>
-        Sources ({sources.length})
-      </button>
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 12 12"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            style={{
+              transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
+              transition: 'transform 0.2s',
+            }}
+          >
+            <polyline points="4,2 8,6 4,10" />
+          </svg>
+          {showTwoTier
+            ? `All sources consulted (${sources.length})`
+            : `Sources (${sources.length})`}
+        </button>
+      )}
 
       {/* Citation chips */}
       {expanded && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-          {sources.map((citation, i) => (
-            <button
-              key={`${citation.chunk_id}-${i}`}
-              onClick={() => onCitationClick?.(citation)}
-              title={`${citation.video_title} at ${formatTimestamp(citation.start_seconds)}\n${citation.snippet}`}
-              style={{
-                display: 'inline-block',
-                padding: '3px 10px',
-                border: '1px solid #3b82f6',
-                borderRadius: 20,
-                fontSize: 12,
-                color: '#f1f5f9',
-                background: 'rgba(59,130,246,0.1)',
-                maxWidth: 220,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
-            >
-              {formatTimestamp(citation.start_seconds)} — {citation.video_title}
-            </button>
-          ))}
+          {(showTwoTier ? consulted : sources).map((c, i) =>
+            citationChip(c, i, onCitationClick, showTwoTier),
+          )}
         </div>
       )}
     </div>
