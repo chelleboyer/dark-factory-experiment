@@ -302,7 +302,7 @@ export function ChatArea({ conversationId, refreshConversationsRef }: ChatAreaPr
     isStreaming,
     startStream,
     abortStream,
-  } = useStreamingResponse();
+  } = useStreamingResponse(conversationId || null);
   const { addToast } = useToast();
   const { refresh: refreshAuth } = useAuth();
 
@@ -420,6 +420,11 @@ export function ChatArea({ conversationId, refreshConversationsRef }: ChatAreaPr
           const removedId = pendingUserMsgIdRef.current;
           setMessages((prev) => prev.filter((m) => m.id !== removedId));
           pendingUserMsgIdRef.current = null;
+        }
+
+        // Intentional abort (navigation or user cancel) — no error toast
+        if (e instanceof DOMException && e.name === 'AbortError') {
+          return;
         }
 
         if (e instanceof RateLimitError) {
